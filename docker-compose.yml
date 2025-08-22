@@ -1,0 +1,68 @@
+volumes:
+  db_storage:
+  n8n_storage:
+  caddy_data:
+
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - db_storage:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - ./caddy_config:/config
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: always
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      - N8N_PORT=5678
+      - NODE_ENV=production
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_PAYLOAD_SIZE_MAX=${N8N_PAYLOAD_SIZE_MAX}
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL}
+      - DB_TYPE=${N8N_DATABASE_TYPE}
+      - DB_POSTGRESDB_HOST=${N8N_DATABASE_POSTGRESDB_HOST}
+      - DB_POSTGRESDB_PORT=${N8N_DATABASE_POSTGRESDB_PORT}
+      - DB_POSTGRESDB_DATABASE=${N8N_DATABASE_POSTGRESDB_DATABASE}
+      - DB_POSTGRESDB_USER=${N8N_DATABASE_POSTGRESDB_USER}
+      - DB_POSTGRESDB_PASSWORD=${N8N_DATABASE_POSTGRESDB_PASSWORD}
+      - N8N_TUNNEL_ENABLED=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_RUNNERS_ENABLED=true
+    ports:
+      - 5678:5678
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - ./workflows:/home/node/.n8n/workflows
+      - ./credentials:/home/node/.n8n/credentials
+    command: "start --tunnel"

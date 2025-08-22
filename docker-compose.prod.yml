@@ -1,0 +1,169 @@
+services:
+  # Reverse proxy for SSL termination and load balancing
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik-prod
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik_prod_data:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - n8n-prod-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+
+  # n8n production service
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n-prod
+    restart: unless-stopped
+    # Remove direct port exposure - use traefik instead
+    # ports:
+    #   - "5678:5678"
+    environment:
+      # Authentication
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      
+      # Server Configuration
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-https}
+      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL}
+      
+      # Security
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_USER_MANAGEMENT_DISABLED=false
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_TRUSTED_PROXIES=loopback,linklocal,uniquelocal
+      
+      # Webhook Configuration
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      
+      # Performance & Logging
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL:-warn}
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PAYLOAD_SIZE_MAX=${N8N_PAYLOAD_SIZE_MAX:-16}
+      
+      # Production Settings
+      - N8N_DISABLE_PRODUCTION_MAIN_PROCESS=false
+      - N8N_DISABLE_UI=false
+      - N8N_TUNNEL_ENABLED=false
+      - N8N_RUNNERS_ENABLED=true
+      
+      # Email Configuration
+      - N8N_EMAIL_MODE=smtp
+      - N8N_SMTP_HOST=${N8N_SMTP_HOST}
+      - N8N_SMTP_PORT=${N8N_SMTP_PORT}
+      - N8N_SMTP_USER=${N8N_SMTP_USER}
+      - N8N_SMTP_PASS=${N8N_SMTP_PASS}
+      - N8N_SMTP_SENDER=${N8N_SMTP_SENDER}
+      
+      # Database (optional - uncomment if using external database)
+      # - N8N_DATABASE_TYPE=postgresdb
+      # - N8N_DATABASE_POSTGRESDB_HOST=${N8N_DATABASE_POSTGRESDB_HOST}
+      # - N8N_DATABASE_POSTGRESDB_PORT=${N8N_DATABASE_POSTGRESDB_PORT}
+      # - N8N_DATABASE_POSTGRESDB_DATABASE=${N8N_DATABASE_POSTGRESDB_DATABASE}
+      # - N8N_DATABASE_POSTGRESDB_USER=${N8N_DATABASE_POSTGRESDB_USER}
+      # - N8N_DATABASE_POSTGRESDB_PASSWORD=${N8N_DATABASE_POSTGRESDB_PASSWORD}
+      
+      # Health Check
+      - N8N_HEALTH_CHECK_ENABLED=true
+    volumes:
+      - n8n_prod_data:/home/node/.n8n
+      - ./workflows:/home/node/.n8n/workflows:ro
+      - ./credentials:/home/node/.n8n/credentials:ro
+      - ./backups:/home/node/.n8n/backups:ro
+    networks:
+      - n8n-prod-network
+    labels:
+      # Traefik labels for routing
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.n8n.tls=true"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.n8n.entrypoints=web,websecure"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      
+      # Security headers
+      - "traefik.http.middlewares.n8n-headers.headers.SSLRedirect=true"
+      - "traefik.http.middlewares.n8n-headers.headers.STSSeconds=315360000"
+      - "traefik.http.middlewares.n8n-headers.headers.browserXSSFilter=true"
+      - "traefik.http.middlewares.n8n-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.n8n-headers.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.n8n-headers.headers.SSLHost=${DOMAIN_NAME}"
+      - "traefik.http.middlewares.n8n-headers.headers.STSIncludeSubdomains=true"
+      - "traefik.http.middlewares.n8n-headers.headers.STSPreload=true"
+      - "traefik.http.routers.n8n.middlewares=n8n-headers"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: PostgreSQL database for production
+  # Uncomment if you want to use external database instead of SQLite
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: n8n-postgres-prod
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_DB=${N8N_DATABASE_POSTGRESDB_DATABASE:-n8n}
+  #     - POSTGRES_USER=${N8N_DATABASE_POSTGRESDB_USER:-n8n}
+  #     - POSTGRES_PASSWORD=${N8N_DATABASE_POSTGRESDB_PASSWORD}
+  #   volumes:
+  #     - postgres_prod_data:/var/lib/postgresql/data
+  #   networks:
+  #     - n8n-prod-network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #         cpus: '0.5'
+  #       reservations:
+  #         memory: 256M
+  #         cpus: '0.25'
+
+volumes:
+  n8n_prod_data:
+    driver: local
+  traefik_prod_data:
+    driver: local
+  # postgres_prod_data:
+  #   driver: local
+
+networks:
+  n8n-prod-network:
+    driver: bridge 
